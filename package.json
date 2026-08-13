@@ -6,7 +6,7 @@
     "node": "22.x"
   },
   "scripts": {
-    "start": "n8n license:clear && n8n start"
+    "start": "n8n start"
   },
   "dependencies": {
     "n8n": "1.123.65"
