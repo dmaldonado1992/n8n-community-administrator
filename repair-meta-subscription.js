@@ -2,6 +2,13 @@ const token = process.env.META_PAGE_ACCESS_TOKEN || process.env.META_ACCESS_TOKE
 const preferredVersion = process.env.META_GRAPH_VERSION || 'v26.0';
 const versions = [...new Set([preferredVersion, 'v24.0'])];
 const requiredFields = 'messages,messaging_postbacks';
+const requiredIgFacebookPermissions = [
+  'instagram_basic',
+  'instagram_manage_messages',
+  'pages_manage_metadata',
+  'pages_messaging',
+  'pages_read_engagement',
+];
 
 function safeError(error) {
   const body = error?.body || {};
@@ -36,6 +43,36 @@ async function request(url, options = {}, bearer = token) {
   return body;
 }
 
+async function inspectFacebookPermissions(version) {
+  try {
+    const result = await request(`https://graph.facebook.com/${version}/me/permissions`);
+    const statuses = Object.fromEntries((result?.data || []).map(p => [p.permission, p.status]));
+    const required = Object.fromEntries(requiredIgFacebookPermissions.map(p => [p, statuses[p] || 'missing']));
+    const missing = Object.entries(required).filter(([, status]) => status !== 'granted').map(([permission]) => permission);
+    console.log('[META_PERMISSIONS] required', JSON.stringify({ required, missing }));
+    return { required, missing };
+  } catch (error) {
+    console.log('[META_PERMISSIONS] check failed', JSON.stringify({ error: safeError(error) }));
+    return { required: {}, missing: requiredIgFacebookPermissions };
+  }
+}
+
+async function inspectInstagramConversations(pageId, pageToken, version) {
+  try {
+    const result = await request(
+      `https://graph.facebook.com/${version}/${encodeURIComponent(pageId)}/conversations?platform=instagram&fields=id,updated_time&limit=5`,
+      {},
+      pageToken
+    );
+    const rows = (result?.data || []).map(x => ({ id: String(x.id || ''), updated_time: x.updated_time || null }));
+    console.log('[META_CONVERSATIONS] instagram accessible', JSON.stringify({ pageId: String(pageId), count: rows.length, recent: rows }));
+    return { ok: true, count: rows.length };
+  } catch (error) {
+    console.log('[META_CONVERSATIONS] instagram unavailable', JSON.stringify({ pageId: String(pageId), error: safeError(error) }));
+    return { ok: false, error: safeError(error) };
+  }
+}
+
 async function subscribeInstagramLogin() {
   for (const version of versions) {
     try {
@@ -62,7 +99,7 @@ async function subscribeInstagramLogin() {
   return { ok: false, mode: 'instagram' };
 }
 
-async function subscribeFacebookPage(pageId, pageToken, version, pageName, igAccount) {
+async function subscribeFacebookPage(pageId, pageToken, version, pageName, igAccount, tasks = []) {
   const result = await request(
     `https://graph.facebook.com/${version}/${encodeURIComponent(pageId)}/subscribed_apps?subscribed_fields=${encodeURIComponent(requiredFields)}`,
     { method: 'POST' },
@@ -76,13 +113,21 @@ async function subscribeFacebookPage(pageId, pageToken, version, pageName, igAcc
   const fields = Array.isArray(verify?.data)
     ? [...new Set(verify.data.flatMap(item => Array.isArray(item?.subscribed_fields) ? item.subscribed_fields : []))]
     : [];
+  const apps = (verify?.data || []).map(item => ({
+    id: String(item?.id || ''),
+    name: item?.name || null,
+    subscribed_fields: Array.isArray(item?.subscribed_fields) ? item.subscribed_fields : [],
+  }));
   console.log('[META_SUBSCRIBE] facebook page verified', JSON.stringify({
     pageId: String(pageId),
     pageName: pageName || null,
     instagram: igAccount ? { id: String(igAccount.id || ''), username: igAccount.username || null } : null,
+    tasks: Array.isArray(tasks) ? tasks : [],
     success: result?.success === true,
     subscribed_fields: fields,
+    apps,
   }));
+  await inspectInstagramConversations(pageId, pageToken, version);
   return fields.includes('messages') && fields.includes('messaging_postbacks');
 }
 
@@ -91,14 +136,22 @@ async function subscribeFacebookLogin() {
     try {
       const me = await request(`https://graph.facebook.com/${version}/me?fields=id,name`);
       console.log('[META_SUBSCRIBE] facebook identity', JSON.stringify({ version, id: String(me?.id || ''), name: me?.name || null }));
+      await inspectFacebookPermissions(version);
 
       let repaired = false;
       try {
-        const accounts = await request(`https://graph.facebook.com/${version}/me/accounts?fields=id,name,access_token,instagram_business_account%7Bid,username%7D`);
+        const accounts = await request(`https://graph.facebook.com/${version}/me/accounts?fields=id,name,access_token,tasks,instagram_business_account%7Bid,username%7D`);
         for (const page of accounts?.data || []) {
           if (!page?.id) continue;
           try {
-            const ok = await subscribeFacebookPage(page.id, page.access_token || token, version, page.name, page.instagram_business_account || null);
+            const ok = await subscribeFacebookPage(
+              page.id,
+              page.access_token || token,
+              version,
+              page.name,
+              page.instagram_business_account || null,
+              page.tasks || []
+            );
             repaired = repaired || ok;
           } catch (error) {
             console.log('[META_SUBSCRIBE] page subscribe failed', JSON.stringify({ pageId: String(page.id), error: safeError(error) }));
@@ -111,7 +164,7 @@ async function subscribeFacebookLogin() {
       if (!repaired && me?.id) {
         try {
           const page = await request(`https://graph.facebook.com/${version}/${encodeURIComponent(me.id)}?fields=id,name,instagram_business_account%7Bid,username%7D`);
-          repaired = await subscribeFacebookPage(page.id, token, version, page.name, page.instagram_business_account || null);
+          repaired = await subscribeFacebookPage(page.id, token, version, page.name, page.instagram_business_account || null, []);
         } catch (error) {
           console.log('[META_SUBSCRIBE] direct page path failed', JSON.stringify({ id: String(me.id), error: safeError(error) }));
         }
@@ -138,6 +191,5 @@ async function main() {
 }
 
 main().catch(error => {
-  // Never prevent n8n from starting because Meta is temporarily unavailable.
   console.error('[META_SUBSCRIBE] non-fatal failure', JSON.stringify(safeError(error)));
 });
