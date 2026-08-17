@@ -1,6 +1,12 @@
-const token=process.env.META_INSTAGRAM_ACCESS_TOKEN||'';
+const raw=process.env.META_INSTAGRAM_ACCESS_TOKEN||'';
 const igUserId='17841441308562806';
 const recipientId='1644231633938346';
+const hadBearer=/^\s*Bearer\s+/i.test(raw);
+const hadQuotes=/^\s*["'].*["']\s*$/.test(raw);
+let token=raw.trim().replace(/^Bearer\s+/i,'').trim();
+if((token.startsWith('"')&&token.endsWith('"'))||(token.startsWith("'")&&token.endsWith("'"))) token=token.slice(1,-1).trim();
+const internalWhitespace=/\s/.test(token);
+console.log('[IG_TOKEN_TEST] token_shape '+JSON.stringify({present:!!raw,rawLength:raw.length,normalizedLength:token.length,hadBearer,hadQuotes,internalWhitespace,looksInstagram:/^IG/i.test(token),looksFacebook:/^EA/i.test(token)}));
 if(!token){
   console.log('[IG_TOKEN_TEST] missing META_INSTAGRAM_ACCESS_TOKEN');
   process.exit(0);
