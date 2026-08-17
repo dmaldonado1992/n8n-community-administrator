@@ -6,7 +6,7 @@
     "node": "22.x"
   },
   "scripts": {
-    "start": "node repair-meta-subscription.js && NODE_OPTIONS=--max-old-space-size=320 N8N_LOG_LEVEL=info n8n start"
+    "start": "node repair-meta-subscription.js && node repair-meta-app-webhook.js && NODE_OPTIONS=--max-old-space-size=320 N8N_LOG_LEVEL=info n8n start"
   },
   "dependencies": {
     "n8n": "1.123.65"
