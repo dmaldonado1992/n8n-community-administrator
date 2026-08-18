@@ -27,6 +27,11 @@ const config = {
   } : false,
 };
 
+const tempWorkflowIds = [
+  'Evm8vkCWCQbGmdxU', // TEMP — Inspect Workflow DB Schema
+  'QcFfSyIGKn6kwJoz', // TEMP — Patch English Action Admin Router
+];
+
 async function main() {
   const client = new Client(config);
   await client.connect();
@@ -49,6 +54,24 @@ async function main() {
 
     if (verify.rowCount !== 1) throw new Error('sequence verification failed');
     console.log('[ORDER_SEQUENCE] ready ' + JSON.stringify(verify.rows[0]));
+
+    try {
+      const result = await client.query(`
+        UPDATE public.workflow_entity
+        SET active = FALSE
+        WHERE id = ANY($1::text[])
+        RETURNING id, name, active
+      `, [tempWorkflowIds]);
+
+      const found = new Set(result.rows.map(row => String(row.id)));
+      const missing = tempWorkflowIds.filter(id => !found.has(id));
+      console.log('[TEMP_WORKFLOWS] deactivated ' + JSON.stringify({
+        updated: result.rows,
+        missing,
+      }));
+    } catch (error) {
+      console.error('[TEMP_WORKFLOWS] deactivate failed: ' + String(error?.message || error));
+    }
   } finally {
     await client.end();
   }
