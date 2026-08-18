@@ -36,6 +36,8 @@ const instagramWorkflowId = '6l5IbTxGdwcL24wT';
 const instagramEngineNodeName = 'Dynamic Notion Sales Engine';
 const sessionTimeoutMarker = '/* INSTAGRAM_SESSION_INACTIVITY_15M_V1 */';
 const phonePromptMarker = '/* INSTAGRAM_PHONE_PROMPT_NO_MAX_LENGTH_V1 */';
+const defaultProductMarker = '/* INSTAGRAM_DEFAULT_PRODUCT_QA_V1 */';
+const editOrderFieldsMarker = '/* INSTAGRAM_EDIT_ADDRESS_PHONE_V1 */';
 
 async function patchInstagramWorkflow(client) {
   const result = await client.query(`
@@ -85,11 +87,69 @@ async function patchInstagramWorkflow(client) {
     changed = true;
   }
 
+  if (!code.includes(defaultProductMarker)) {
+    const defaultQuestionAnchor = "    const question=__productQuestion(text);\n    if(__wantsCatalog(text)){";
+    if (!code.includes(defaultQuestionAnchor)) {
+      throw new Error('Instagram default-product question anchor not found');
+    }
+    code = code.replace(
+      defaultQuestionAnchor,
+      `    const question=__productQuestion(text);\n    ${defaultProductMarker}\n    const questionProduct=product||products[0]||null;\n    if(__wantsCatalog(text)){`,
+    );
+
+    const defaultAnswerNeedle = "    }else if(question.isQuestion&&product){\n      reply=__answerProduct(text,product)+'\\n\\nSi deseas pedirlo, escribe: \"Quiero '+product.name+'\".';";
+    if (!code.includes(defaultAnswerNeedle)) {
+      throw new Error('Instagram default-product answer anchor not found');
+    }
+    code = code.replace(
+      defaultAnswerNeedle,
+      "    }else if(question.isQuestion&&questionProduct){\n      reply=__answerProduct(text,questionProduct)+'\\n\\nSi deseas pedirlo, escribe: \"Quiero '+questionProduct.name+'\".';",
+    );
+
+    const activeQuestionNeedle = "    }else if(question.isQuestion&&(referencedProduct||activeProduct)){\n      const targetProduct=referencedProduct||activeProduct;";
+    if (!code.includes(activeQuestionNeedle)) {
+      throw new Error('Instagram active-session product question anchor not found');
+    }
+    code = code.replace(
+      activeQuestionNeedle,
+      "    }else if(question.isQuestion&&(referencedProduct||activeProduct||products[0])){\n      const targetProduct=referencedProduct||activeProduct||products[0];",
+    );
+    changed = true;
+  }
+
+  if (!code.includes(editOrderFieldsMarker)) {
+    const helperAnchor = "const __wantsProductChange=input=>/(cambiar|cambia|cambio|prefiero|mejor|otro producto|quiero otro)/.test(__normProduct(input));";
+    if (!code.includes(helperAnchor)) {
+      throw new Error('Instagram edit-field helper anchor not found');
+    }
+    const helper = `${helperAnchor}\n${editOrderFieldsMarker}\nconst __editOrderFieldIntent=input=>{\n  const n=__normProduct(input);\n  const wantsEdit=/(^|\\b)(cambiar|cambia|cambio|actualizar|actualiza|modificar|modifica|editar|edita|corregir|corrige)(\\b|$)/.test(n);\n  if(!wantsEdit) return '';\n  if(/\\b(direccion|domicilio|ubicacion|direccion de entrega)\\b/.test(n)) return 'direccion';\n  if(/\\b(telefono|numero de telefono|celular|movil)\\b/.test(n)) return 'telefono';\n  return '';\n};`;
+    code = code.replace(helperAnchor, helper);
+
+    const sessionIntentAnchor = "    const question=__productQuestion(text);\n    const exactReferenced=referencedProduct&&__normProduct(text)===referencedProduct.normalizedName;";
+    if (!code.includes(sessionIntentAnchor)) {
+      throw new Error('Instagram edit-field session intent anchor not found');
+    }
+    code = code.replace(
+      sessionIntentAnchor,
+      "    const question=__productQuestion(text);\n    const editOrderField=__editOrderFieldIntent(text);\n    const exactReferenced=referencedProduct&&__normProduct(text)===referencedProduct.normalizedName;",
+    );
+
+    const branchAnchor = "      reply='Pedido cancelado. Empecemos de nuevo.'+(list?'\\n\\nProductos disponibles:\\n'+list+'\\n\\nResponde con el número o nombre del producto.':'');\n    }else if(__wantsCatalog(text)){";
+    if (!code.includes(branchAnchor)) {
+      throw new Error('Instagram edit-field branch anchor not found');
+    }
+    const editBranch = `      reply='Pedido cancelado. Empecemos de nuevo.'+(list?'\\n\\nProductos disponibles:\\n'+list+'\\n\\nResponde con el número o nombre del producto.':'');\n    }else if(editOrderField){\n      const targetStep=steps.find(s=>s.field===editOrderField);\n      if(!targetStep){\n        reply='No pude encontrar el paso para actualizar ese dato. Seguimos donde quedamos: '+currentPrompt;\n      }else{\n        await notionReq('PATCH','https://api.notion.com/v1/pages/'+session.id,{properties:{\n          'Paso actual':{relation:[{id:targetStep.id}]},\n          'Última actividad':{date:{start:now}}\n        }});\n        reply=await __stepPrompt(targetStep,session);\n        log('ORDER_FIELD_EDIT_REQUESTED',{sender,sessionId:session.id,orderNumber,field:editOrderField,targetStepId:targetStep.id});\n      }\n    }else if(__wantsCatalog(text)){`;
+    code = code.replace(branchAnchor, editBranch);
+    changed = true;
+  }
+
   if (!changed) {
     console.log('[INSTAGRAM_PATCH] already applied ' + JSON.stringify({
       workflowId: instagramWorkflowId,
       timeoutMinutes: 15,
       phoneMaxLengthMessageRemoved: true,
+      defaultProductQuestions: true,
+      editableOrderFields: ['direccion','telefono'],
     }));
     return;
   }
@@ -128,6 +188,9 @@ async function patchInstagramWorkflow(client) {
     timeoutMinutes: 15,
     refreshActivityOnCustomerMessage: true,
     phoneMaxLengthMessageRemoved: true,
+    defaultProductQuestions: true,
+    defaultProductStrategy: 'catalog_index_1',
+    editableOrderFields: ['direccion','telefono'],
     versionsUpdated: versionIds,
   }));
 }
