@@ -32,10 +32,11 @@ const catalogMessageState = 'catalogo_productos';
 const welcomeMessageState = 'bienvenida';
 const markerV1 = '/* INSTAGRAM_CATALOG_MESSAGE_NOTION_V1 */';
 const markerV2 = '/* INSTAGRAM_CATALOG_MESSAGE_NOTION_V2 */';
+const markerV3 = '/* INSTAGRAM_MESSAGE_SEQUENCE_NOTION_V3 */';
 
 const helperAnchor = "const __wantsProductChange=input=>/(cambiar|cambia|cambio|prefiero|mejor|otro producto|quiero otro)/.test(__normProduct(input));";
 
-const helperCode = `${markerV2}\nconst __notionMessageTemplate=async state=>{\n  try{\n    const data=await notionReq('POST','https://api.notion.com/v1/databases/${messagesDatabaseId}/query',{\n      filter:{and:[\n        {property:'Estado',title:{equals:state}},\n        {property:'Activo',checkbox:{equals:true}}\n      ]},\n      page_size:1\n    });\n    const page=(data.results||[])[0];\n    const rich=page?.properties?.['Mensaje Instagram']?.rich_text||[];\n    return rich.map(x=>x?.plain_text||x?.text?.content||'').join('').trim();\n  }catch(error){\n    log('INSTAGRAM_MESSAGE_NOTION_FALLBACK',{state,error:String(error?.message||error)});\n    return '';\n  }\n};\nconst __catalogMessage=async list=>{\n  const fallbackWelcome='¡Hola! 👋 Bienvenido a Banana Twins.';\n  const fallbackCatalog='{{bienvenida}}\\n\\n🍰 Nuestros productos disponibles son:\\n\\n{{productos}}';\n  const catalogTemplate=(await __notionMessageTemplate('${catalogMessageState}'))||fallbackCatalog;\n  const welcomeTemplate=(await __notionMessageTemplate('${welcomeMessageState}'))||fallbackWelcome;\n  return catalogTemplate\n    .replace(/\\{\\{\\s*bienvenida\\s*\\}\\}/gi,welcomeTemplate)\n    .replace(/\\{\\{\\s*productos\\s*\\}\\}/gi,list||'');\n};`;
+const helperCode = `${markerV3}\nconst __normMessageState=input=>String(input||'').trim().toLowerCase();\nlet __messageSequenceCache=null;\nconst __notionMessageSequence=async()=>{\n  if(Array.isArray(__messageSequenceCache)) return __messageSequenceCache;\n  try{\n    const data=await notionReq('POST','https://api.notion.com/v1/databases/${messagesDatabaseId}/query',{\n      filter:{property:'Activo',checkbox:{equals:true}},\n      sorts:[{property:'Orden',direction:'ascending'}],\n      page_size:100\n    });\n    __messageSequenceCache=(data.results||[]).map((page,index)=>{\n      const props=page?.properties||{};\n      const state=(props.Estado?.title||[]).map(x=>x?.plain_text||x?.text?.content||'').join('').trim();\n      const rich=props['Mensaje Instagram']?.rich_text||[];\n      const template=rich.map(x=>x?.plain_text||x?.text?.content||'').join('').trim();\n      const eventType=props['Tipo evento']?.select?.name||'';\n      const order=Number(props.Orden?.number);\n      return {\n        id:page?.id||'',\n        state,\n        stateKey:__normMessageState(state),\n        template,\n        eventType,\n        order:Number.isFinite(order)?order:(100000+index)\n      };\n    }).filter(x=>x.state&&x.template);\n    log('INSTAGRAM_MESSAGE_SEQUENCE_LOADED',{\n      count:__messageSequenceCache.length,\n      sequence:__messageSequenceCache.map(x=>({state:x.state,order:x.order,eventType:x.eventType}))\n    });\n    return __messageSequenceCache;\n  }catch(error){\n    log('INSTAGRAM_MESSAGE_SEQUENCE_FALLBACK',{error:String(error?.message||error)});\n    __messageSequenceCache=[];\n    return __messageSequenceCache;\n  }\n};\nconst __notionMessageRecord=async state=>{\n  const key=__normMessageState(state);\n  const sequence=await __notionMessageSequence();\n  return sequence.find(x=>x.stateKey===key)||null;\n};\nconst __notionMessageTemplate=async state=>{\n  const record=await __notionMessageRecord(state);\n  return record?.template||'';\n};\nconst __nextConfiguredMessage=async(state,eventType='')=>{\n  const sequence=await __notionMessageSequence();\n  const key=__normMessageState(state);\n  const currentIndex=sequence.findIndex(x=>x.stateKey===key);\n  if(currentIndex<0) return null;\n  const typeKey=String(eventType||'').trim().toLowerCase();\n  for(let i=currentIndex+1;i<sequence.length;i++){\n    const candidate=sequence[i];\n    if(!typeKey||String(candidate.eventType||'').trim().toLowerCase()===typeKey) return candidate;\n  }\n  return null;\n};\nconst __catalogMessage=async list=>{\n  const fallbackWelcome='¡Hola! 👋 Bienvenido a Banana Twins 🍌.';\n  const fallbackCatalog='{{bienvenida}}\\n\\n🍰 Nuestros productos disponibles son:\\n\\n{{productos}}';\n  const sequence=await __notionMessageSequence();\n  const welcomeRecord=sequence.find(x=>x.stateKey==='${welcomeMessageState}')||null;\n  const catalogRecord=sequence.find(x=>x.stateKey==='${catalogMessageState}')||null;\n  if(welcomeRecord&&catalogRecord&&welcomeRecord.order>=catalogRecord.order){\n    log('INSTAGRAM_MESSAGE_SEQUENCE_ORDER_INVALID',{\n      dependency:'${welcomeMessageState}->${catalogMessageState}',\n      welcomeOrder:welcomeRecord.order,\n      catalogOrder:catalogRecord.order\n    });\n  }\n  const welcomeTemplate=welcomeRecord?.template||fallbackWelcome;\n  const catalogTemplate=catalogRecord?.template||fallbackCatalog;\n  return catalogTemplate\n    .replace(/\\{\\{\\s*bienvenida\\s*\\}\\}/gi,welcomeTemplate)\n    .replace(/\\{\\{\\s*productos\\s*\\}\\}/gi,list||'');\n};`;
 
 function parseJson(value, fallback) {
   if (value == null) return fallback;
@@ -44,10 +45,11 @@ function parseJson(value, fallback) {
 }
 
 function replaceLegacyHelper(code) {
-  if (code.includes(markerV2)) return { code, changed: false };
+  if (code.includes(markerV3)) return { code, changed: false };
 
-  if (code.includes(markerV1)) {
-    const start = code.indexOf(markerV1);
+  for (const legacyMarker of [markerV2, markerV1]) {
+    if (!code.includes(legacyMarker)) continue;
+    const start = code.indexOf(legacyMarker);
     const anchorIndex = code.indexOf('\n' + helperAnchor, start);
     if (anchorIndex < 0) throw new Error('Legacy catalog helper end anchor not found');
     return {
@@ -105,6 +107,7 @@ async function main() {
     if (!changed) {
       console.log('[INSTAGRAM_CATALOG_MESSAGE] already applied ' + JSON.stringify({
         workflowId,
+        sequenceMode: 'notion_order',
         catalogMessageState,
         welcomeMessageState,
       }));
@@ -143,6 +146,7 @@ async function main() {
     console.log('[INSTAGRAM_CATALOG_MESSAGE] applied ' + JSON.stringify({
       workflowId,
       messagesDatabaseId,
+      sequenceMode: 'notion_order',
       catalogMessageState,
       welcomeMessageState,
       placeholders: ['{{bienvenida}}','{{productos}}'],
