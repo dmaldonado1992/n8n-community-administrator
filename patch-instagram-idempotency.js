@@ -30,6 +30,7 @@ const config = {
 const workflowId = '6l5IbTxGdwcL24wT';
 const engineNodeName = 'Dynamic Notion Sales Engine';
 const dedupeNodeName = 'Instagram Event Dedupe';
+const legacyAckNodeName = 'Acknowledge Instagram Event';
 const dedupeMarker = '/* INSTAGRAM_EVENT_DEDUPE_V1 */';
 
 const dedupeCode = `${dedupeMarker}
@@ -146,6 +147,28 @@ function patchPostWebhooks(nodes) {
   return { changed, patched };
 }
 
+function removeLegacyAckNode(nodes, connections) {
+  const index = nodes.findIndex(node => node?.name === legacyAckNodeName && node?.type === 'n8n-nodes-base.respondToWebhook');
+  if (index < 0) return { changed: false, removed: [] };
+
+  nodes.splice(index, 1);
+  delete connections[legacyAckNodeName];
+
+  for (const outputs of Object.values(connections || {})) {
+    if (!outputs || typeof outputs !== 'object') continue;
+    for (const groups of Object.values(outputs)) {
+      if (!Array.isArray(groups)) continue;
+      for (let i = 0; i < groups.length; i++) {
+        const group = groups[i];
+        if (!Array.isArray(group)) continue;
+        groups[i] = group.filter(connection => connection?.node !== legacyAckNodeName);
+      }
+    }
+  }
+
+  return { changed: true, removed: [legacyAckNodeName] };
+}
+
 function ensureDedupeNode(nodes, connections) {
   const engine = nodes.find(node => node?.name === engineNodeName);
   if (!engine) throw new Error(`Instagram engine node not found: ${engineNodeName}`);
@@ -234,14 +257,16 @@ async function main() {
     const connections = parseJson(row.connections, {});
 
     const webhookResult = patchPostWebhooks(nodes);
+    const ackResult = removeLegacyAckNode(nodes, connections);
     const dedupeResult = ensureDedupeNode(nodes, connections);
-    const changed = webhookResult.changed || dedupeResult.changed;
+    const changed = webhookResult.changed || ackResult.changed || dedupeResult.changed;
 
     if (!changed) {
       console.log('[INSTAGRAM_IDEMPOTENCY] already applied ' + JSON.stringify({
         workflowId,
         immediateAckWebhooks: webhookResult.patched,
         dedupeNode: dedupeNodeName,
+        obsoleteRespondNodesRemoved: ackResult.removed,
       }));
       return;
     }
@@ -281,6 +306,7 @@ async function main() {
       workflowId,
       immediateAckWebhooks: webhookResult.patched,
       dedupeNode: dedupeNodeName,
+      obsoleteRespondNodesRemoved: ackResult.removed,
       rewiredConnections: dedupeResult.rewired,
       ttlHours: 6,
       maxRememberedEvents: 2000,
