@@ -28,17 +28,39 @@ const config = {
 const workflowId = '6l5IbTxGdwcL24wT';
 const engineNodeName = 'Dynamic Notion Sales Engine';
 const messagesDatabaseId = 'f2a0a522-2409-45c0-b2f2-6c2a7959ac3c';
-const messageState = 'CATALOGO_PRODUCTOS';
-const marker = '/* INSTAGRAM_CATALOG_MESSAGE_NOTION_V1 */';
+const catalogMessageState = 'catalogo_productos';
+const welcomeMessageState = 'bienvenida';
+const markerV1 = '/* INSTAGRAM_CATALOG_MESSAGE_NOTION_V1 */';
+const markerV2 = '/* INSTAGRAM_CATALOG_MESSAGE_NOTION_V2 */';
 
 const helperAnchor = "const __wantsProductChange=input=>/(cambiar|cambia|cambio|prefiero|mejor|otro producto|quiero otro)/.test(__normProduct(input));";
 
-const helperCode = `${marker}\nconst __catalogMessage=async list=>{\n  const fallback='Productos disponibles:\\n'+(list||'')+'\\n\\nResponde con el número o nombre del producto.';\n  try{\n    const data=await notionReq('POST','https://api.notion.com/v1/databases/${messagesDatabaseId}/query',{\n      filter:{and:[\n        {property:'Estado',title:{equals:'${messageState}'}},\n        {property:'Activo',checkbox:{equals:true}}\n      ]},\n      page_size:1\n    });\n    const page=(data.results||[])[0];\n    const rich=page?.properties?.['Mensaje Instagram']?.rich_text||[];\n    const template=rich.map(x=>x?.plain_text||x?.text?.content||'').join('').trim();\n    if(!template) return fallback;\n    return template.replace(/\\{\\{\\s*productos\\s*\\}\\}/gi,list||'');\n  }catch(error){\n    log('CATALOG_MESSAGE_NOTION_FALLBACK',{state:'${messageState}',error:String(error?.message||error)});\n    return fallback;\n  }\n};`;
+const helperCode = `${markerV2}\nconst __notionMessageTemplate=async state=>{\n  try{\n    const data=await notionReq('POST','https://api.notion.com/v1/databases/${messagesDatabaseId}/query',{\n      filter:{and:[\n        {property:'Estado',title:{equals:state}},\n        {property:'Activo',checkbox:{equals:true}}\n      ]},\n      page_size:1\n    });\n    const page=(data.results||[])[0];\n    const rich=page?.properties?.['Mensaje Instagram']?.rich_text||[];\n    return rich.map(x=>x?.plain_text||x?.text?.content||'').join('').trim();\n  }catch(error){\n    log('INSTAGRAM_MESSAGE_NOTION_FALLBACK',{state,error:String(error?.message||error)});\n    return '';\n  }\n};\nconst __catalogMessage=async list=>{\n  const fallbackWelcome='¡Hola! 👋 Bienvenido a Banana Twins.';\n  const fallbackCatalog='{{bienvenida}}\\n\\n🍰 Nuestros productos disponibles son:\\n\\n{{productos}}';\n  const catalogTemplate=(await __notionMessageTemplate('${catalogMessageState}'))||fallbackCatalog;\n  const welcomeTemplate=(await __notionMessageTemplate('${welcomeMessageState}'))||fallbackWelcome;\n  return catalogTemplate\n    .replace(/\\{\\{\\s*bienvenida\\s*\\}\\}/gi,welcomeTemplate)\n    .replace(/\\{\\{\\s*productos\\s*\\}\\}/gi,list||'');\n};`;
 
 function parseJson(value, fallback) {
   if (value == null) return fallback;
   if (typeof value === 'object') return value;
   try { return JSON.parse(value); } catch { return fallback; }
+}
+
+function replaceLegacyHelper(code) {
+  if (code.includes(markerV2)) return { code, changed: false };
+
+  if (code.includes(markerV1)) {
+    const start = code.indexOf(markerV1);
+    const anchorIndex = code.indexOf('\n' + helperAnchor, start);
+    if (anchorIndex < 0) throw new Error('Legacy catalog helper end anchor not found');
+    return {
+      code: code.slice(0, start) + helperCode + code.slice(anchorIndex),
+      changed: true,
+    };
+  }
+
+  if (!code.includes(helperAnchor)) throw new Error('Catalog message helper anchor not found');
+  return {
+    code: code.replace(helperAnchor, helperCode + '\n' + helperAnchor),
+    changed: true,
+  };
 }
 
 async function main() {
@@ -62,11 +84,9 @@ async function main() {
     let code = String(engine.parameters.jsCode);
     let changed = false;
 
-    if (!code.includes(marker)) {
-      if (!code.includes(helperAnchor)) throw new Error('Catalog message helper anchor not found');
-      code = code.replace(helperAnchor, helperCode + '\n' + helperAnchor);
-      changed = true;
-    }
+    const helperResult = replaceLegacyHelper(code);
+    code = helperResult.code;
+    changed = changed || helperResult.changed;
 
     const directHardcoded = "'Productos disponibles:\\n'+list+'\\n\\nResponde con el número o nombre del producto.'";
     const directReplacement = "(await __catalogMessage(list))";
@@ -83,7 +103,11 @@ async function main() {
     }
 
     if (!changed) {
-      console.log('[INSTAGRAM_CATALOG_MESSAGE] already applied ' + JSON.stringify({ workflowId, messageState }));
+      console.log('[INSTAGRAM_CATALOG_MESSAGE] already applied ' + JSON.stringify({
+        workflowId,
+        catalogMessageState,
+        welcomeMessageState,
+      }));
       return;
     }
 
@@ -119,8 +143,9 @@ async function main() {
     console.log('[INSTAGRAM_CATALOG_MESSAGE] applied ' + JSON.stringify({
       workflowId,
       messagesDatabaseId,
-      messageState,
-      placeholder: '{{productos}}',
+      catalogMessageState,
+      welcomeMessageState,
+      placeholders: ['{{bienvenida}}','{{productos}}'],
       versionsUpdated: versionIds,
     }));
   } finally {
