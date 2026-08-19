@@ -89,14 +89,14 @@ function eventKey(json) {
   const reaction = value.reaction || {};
 
   const mid = message.mid || value.mid || postback.mid || reaction.mid || '';
-  if (mid) return `mid:${String(mid)}`;
+  if (mid) return 'mid:' + String(mid);
 
   const sender = value.sender?.id || value.from?.id || value.user_id || value.sender_id || '';
   const timestamp = value.timestamp || value.time || event.entry?.time || event.body?.time || '';
   if (!sender || !timestamp) return '';
 
   const payload = postback.payload || postback.title || message.text || value.text || reaction.action || reaction.emoji || '';
-  return `evt:${String(event.field || 'unknown')}:${String(sender)}:${String(timestamp)}:${String(payload)}`;
+  return 'evt:' + String(event.field || 'unknown') + ':' + String(sender) + ':' + String(timestamp) + ':' + String(payload);
 }
 
 const output = [];
