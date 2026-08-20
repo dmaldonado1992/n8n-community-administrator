@@ -10,7 +10,7 @@
     "start": "node organize-workflow-folders.js && node ensure-order-sequence.js && node patch-instagram-catalog-message.js && node patch-instagram-thanks-message.js && node fix-instagram-payment-shipping-patch.js && node patch-instagram-payment-shipping-config.js && node patch-instagram-recipient-name-order.js && node patch-instagram-faq-resume.js && node patch-instagram-final-total-shipping.js && node patch-instagram-idempotency.js && node repair-meta-subscription.js && node repair-meta-app-webhook.js && NODE_OPTIONS=--max-old-space-size=320 N8N_LOG_LEVEL=warn n8n start"
   },
   "dependencies": {
-    "n8n": "1.123.65",
+    "n8n": "1.123.72",
     "pg": "8.16.3"
   }
 }
