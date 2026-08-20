@@ -98,16 +98,14 @@ async function main() {
        ORDER BY w.name
     `);
 
-    const unmapped = result.rows.filter((row) => !folderFor(row.name));
-    if (unmapped.length) {
-      throw new Error(`Unmapped workflows: ${unmapped.map((row) => `${row.id}:${row.name}`).join(', ')}`);
-    }
-
-    const projects = [...new Set(result.rows.map((row) => String(row.projectId)))];
+    const mapped = result.rows.filter((row) => folderFor(row.name));
+    const skipped = result.rows.filter((row) => !folderFor(row.name));
+    const projects = [...new Set(mapped.map((row) => String(row.projectId)))];
     const folderIds = new Map();
 
     for (const projectId of projects) {
       for (const rule of folderRules) {
+        if (!mapped.some((row) => String(row.projectId) === projectId && folderFor(row.name) === rule.name)) continue;
         const id = await ensureFolder(client, projectId, rule.name);
         folderIds.set(`${projectId}:${rule.name}`, id);
       }
@@ -116,7 +114,7 @@ async function main() {
     const moved = [];
     const unchanged = [];
 
-    for (const row of result.rows) {
+    for (const row of mapped) {
       const folderName = folderFor(row.name);
       const folderId = folderIds.get(`${row.projectId}:${folderName}`);
 
@@ -149,22 +147,25 @@ async function main() {
        ORDER BY f.name, w.name
     `);
 
-    const missingFolder = verification.rows.filter((row) => !row.folder_name);
-    if (missingFolder.length) {
-      throw new Error(`Folder verification failed for: ${missingFolder.map((row) => row.id).join(', ')}`);
+    const verificationById = new Map(verification.rows.map((row) => [String(row.id), row]));
+    const failed = mapped.filter((row) => !verificationById.get(String(row.id))?.folder_name);
+    if (failed.length) {
+      throw new Error(`Folder verification failed for mapped workflows: ${failed.map((row) => row.id).join(', ')}`);
     }
 
     await client.query('COMMIT');
 
     const counts = verification.rows.reduce((acc, row) => {
-      acc[row.folder_name] = (acc[row.folder_name] || 0) + 1;
+      if (row.folder_name) acc[row.folder_name] = (acc[row.folder_name] || 0) + 1;
       return acc;
     }, {});
 
     console.log('[WORKFLOW_FOLDERS] ready ' + JSON.stringify({
       totalWorkflows: verification.rowCount,
+      mapped: mapped.length,
       moved: moved.length,
       unchanged: unchanged.length,
+      skipped: skipped.map((row) => ({ id: row.id, name: row.name })),
       folders: counts,
       workflowIdsPreserved: true,
     }));
