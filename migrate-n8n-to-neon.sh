@@ -5,7 +5,12 @@ set -eu
 : "${TARGET_DATABASE_URL:?TARGET_DATABASE_URL is required}"
 
 MIRROR_DB="${MIRROR_DATABASE_NAME:-n8n_mirror}"
-TARGET_MIRROR_URL="$(printf '%s' "$TARGET_DATABASE_URL" | sed -E "s#(/)[^/?]+(\\?.*)?$#\\1$MIRROR_DB\\2#")"
+TARGET_BASE="${TARGET_DATABASE_URL%%\?*}"
+TARGET_PREFIX="${TARGET_BASE%/*}"
+TARGET_MIRROR_URL="${TARGET_PREFIX}/${MIRROR_DB}"
+case "$TARGET_DATABASE_URL" in
+  *\?*) TARGET_MIRROR_URL="${TARGET_MIRROR_URL}?${TARGET_DATABASE_URL#*\?}" ;;
+esac
 
 echo "Checking target database..."
 if ! psql "$TARGET_DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname = '$MIRROR_DB'" | grep -q 1; then
