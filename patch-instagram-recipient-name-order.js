@@ -32,10 +32,10 @@ function parseJson(value, fallback) {
   try { return JSON.parse(value); } catch { return fallback; }
 }
 
-function replaceAllChecked(code, needle, replacement, label, minCount=1) {
-  const count = code.split(needle).length - 1;
-  if (count < minCount) throw new Error(`${label} anchor not found (found ${count})`);
-  return code.split(needle).join(replacement);
+function ensureReplace(code, oldValue, newValue) {
+  if (code.includes(oldValue)) return code.split(oldValue).join(newValue);
+  if (code.includes(newValue)) return code;
+  return code;
 }
 
 async function main() {
@@ -60,40 +60,64 @@ async function main() {
       return;
     }
 
-    // Make Orden authoritative: next step is the first active step with a greater order.
-    code = replaceAllChecked(code, 'steps.find(s=>s.order<current.order)', 'steps.find(s=>s.order>current.order)', 'next-step order', 4);
-    code = replaceAllChecked(code, "steps.find(s=>s.order<current.order&&s.field==='foto_boleta')", "steps.find(s=>s.order>current.order&&s.field==='foto_boleta')", 'payment receipt order');
-    code = replaceAllChecked(code, "steps.find(s=>s.order<next.order&&s.field==='foto_boleta')", "steps.find(s=>s.order>next.order&&s.field==='foto_boleta')", 'single payment receipt order');
+    // Orden is ascending in Notion. Keep navigation on the first greater order.
+    // These replacements are tolerant when a previous patch already fixed navigation.
+    code = ensureReplace(code,
+      "steps.find(s=>s.order<current.order&&s.field==='foto_boleta')",
+      "steps.find(s=>s.order>current.order&&s.field==='foto_boleta')"
+    );
+    code = ensureReplace(code,
+      "steps.find(s=>s.order<next.order&&s.field==='foto_boleta')",
+      "steps.find(s=>s.order>next.order&&s.field==='foto_boleta')"
+    );
+    code = ensureReplace(code,
+      'steps.find(s=>s.order<current.order)',
+      'steps.find(s=>s.order>current.order)'
+    );
 
-    // Persist the newly configured recipient field into the session.
+    if (!code.includes('steps.find(s=>s.order>current.order)') &&
+        !code.includes("steps.find(s=>s.order>current.order&&s.field==='foto_boleta')")) {
+      throw new Error('ascending order navigation could not be verified');
+    }
+
+    // Persist recipient name in active session.
     const phonePersist = "      if(current.field==='telefono') props['Teléfono (temporal)']={phone_number:text};";
-    const recipientPersist = `${phonePersist}\n      if(current.field==='persona_recibe') props['Persona que recibe (temporal)']={rich_text:[{text:{content:text}}]};`;
-    if (!code.includes(phonePersist)) throw new Error('generic field persistence anchor not found');
-    code = code.replace(phonePersist, recipientPersist);
+    const recipientPersistLine = "      if(current.field==='persona_recibe') props['Persona que recibe (temporal)']={rich_text:[{text:{content:text}}]};";
+    if (!code.includes(recipientPersistLine)) {
+      if (!code.includes(phonePersist)) throw new Error('generic field persistence anchor not found');
+      code = code.replace(phonePersist, `${phonePersist}\n${recipientPersistLine}`);
+    }
 
-    // Cash/no-receipt order path.
+    // Cash/no-receipt final order.
     const cashPhone = "          const phone=session.properties['Teléfono (temporal)']?.phone_number||'';";
-    const cashRecipient = `${cashPhone}\n          const recipientName=rich(session.properties['Persona que recibe (temporal)']);`;
-    if (!code.includes(cashPhone)) throw new Error('cash recipient anchor not found');
-    code = code.replace(cashPhone, cashRecipient);
+    const cashRecipientLine = "          const recipientName=rich(session.properties['Persona que recibe (temporal)']);";
+    if (!code.includes(cashRecipientLine)) {
+      if (!code.includes(cashPhone)) throw new Error('cash recipient anchor not found');
+      code = code.replace(cashPhone, `${cashPhone}\n${cashRecipientLine}`);
+    }
 
     const cashClient = "            'Nombre cliente':{rich_text:clientName?[{text:{content:clientName}}]:[]},\n            'Pedido #':{number:orderNumber},";
     const cashClientWithRecipient = "            'Nombre cliente':{rich_text:clientName?[{text:{content:clientName}}]:[]},\n            'Persona que recibe':{rich_text:recipientName?[{text:{content:recipientName}}]:[]},\n            'Pedido #':{number:orderNumber},";
-    if (!code.includes(cashClient)) throw new Error('cash order property anchor not found');
-    code = code.replace(cashClient, cashClientWithRecipient);
+    if (!code.includes("'Persona que recibe':{rich_text:recipientName?[{text:{content:recipientName}}]:[]}")) {
+      if (!code.includes(cashClient)) throw new Error('cash order property anchor not found');
+      code = code.replace(cashClient, cashClientWithRecipient);
+    }
 
-    // Receipt/transfer final-order path.
+    // Receipt/transfer final order.
     const transferPhone = "        const phone=current.field==='telefono'?text:session.properties['Teléfono (temporal)']?.phone_number||'';";
-    const transferRecipient = `${transferPhone}\n        const recipientName=current.field==='persona_recibe'?text:rich(session.properties['Persona que recibe (temporal)']);`;
-    if (!code.includes(transferPhone)) throw new Error('transfer recipient anchor not found');
-    code = code.replace(transferPhone, transferRecipient);
+    const transferRecipientLine = "        const recipientName=current.field==='persona_recibe'?text:rich(session.properties['Persona que recibe (temporal)']);";
+    if (!code.includes(transferRecipientLine)) {
+      if (!code.includes(transferPhone)) throw new Error('transfer recipient anchor not found');
+      code = code.replace(transferPhone, `${transferPhone}\n${transferRecipientLine}`);
+    }
 
     const transferClient = "'Nombre cliente':{rich_text:clientName?[{text:{content:clientName}}]:[]},'Pedido #':{number:orderNumber}";
     const transferClientWithRecipient = "'Nombre cliente':{rich_text:clientName?[{text:{content:clientName}}]:[]},'Persona que recibe':{rich_text:recipientName?[{text:{content:recipientName}}]:[]},'Pedido #':{number:orderNumber}";
-    if (!code.includes(transferClient)) throw new Error('transfer order property anchor not found');
-    code = code.replace(transferClient, transferClientWithRecipient);
+    if (!code.includes("'Nombre cliente':{rich_text:clientName?[{text:{content:clientName}}]:[]},'Persona que recibe':{rich_text:recipientName?[{text:{content:recipientName}}]:[]},'Pedido #':{number:orderNumber}")) {
+      if (!code.includes(transferClient)) throw new Error('transfer order property anchor not found');
+      code = code.replace(transferClient, transferClientWithRecipient);
+    }
 
-    // Marker after engine header to make startup patch idempotent.
     const header = '/* INSTAGRAM_SALES_ENGINE_V3_TIMEOUT_SAFE */';
     if (!code.includes(header)) throw new Error('engine header anchor not found');
     code = code.replace(header, `${header}\n${marker}`);
