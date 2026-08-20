@@ -12,9 +12,15 @@ function warn(message) {
   console.warn(`[OVERVIEW_FOLDERS] ${message}`);
 }
 
-function resolvePackageRoot(packageName, paths = [process.cwd()]) {
-  const packageJson = require.resolve(`${packageName}/package.json`, { paths });
-  return path.dirname(packageJson);
+function resolveN8nRoot() {
+  return path.dirname(require.resolve('n8n/package.json', { paths: [process.cwd()] }));
+}
+
+function resolveEditorRoot(n8nRoot) {
+  // Match n8n's own resolution strategy from packages/cli/src/constants.ts:
+  // dirname(require.resolve('n8n-editor-ui'))
+  const entry = require.resolve('n8n-editor-ui', { paths: [n8nRoot, process.cwd()] });
+  return path.dirname(entry);
 }
 
 function patchBackend(n8nRoot) {
@@ -48,7 +54,7 @@ function patchBackend(n8nRoot) {
 function patchEditorUi(n8nRoot) {
   let editorRoot;
   try {
-    editorRoot = resolvePackageRoot('n8n-editor-ui', [n8nRoot, process.cwd()]);
+    editorRoot = resolveEditorRoot(n8nRoot);
   } catch (error) {
     warn(`could not resolve n8n-editor-ui: ${error.message}`);
     return false;
@@ -125,7 +131,7 @@ function patchEditorUi(n8nRoot) {
 function main() {
   let n8nRoot;
   try {
-    n8nRoot = resolvePackageRoot('n8n');
+    n8nRoot = resolveN8nRoot();
   } catch (error) {
     warn(`could not resolve n8n: ${error.message}`);
     process.exit(0);
