@@ -29,10 +29,11 @@ pg_restore --dbname="$TARGET_MIRROR_URL" --no-owner --no-acl --exit-on-error /tm
 echo "Validating restored database..."
 SOURCE_TABLES="$(psql "$SOURCE_DATABASE_URL" -tAc "SELECT count(*) FROM pg_tables WHERE schemaname='public'")"
 TARGET_TABLES="$(psql "$TARGET_MIRROR_URL" -tAc "SELECT count(*) FROM pg_tables WHERE schemaname='public'")"
-SOURCE_WORKFLOWS="$(psql "$SOURCE_DATABASE_URL" -tAc 'SELECT count(*) FROM workflow_entity')"
-TARGET_WORKFLOWS="$(psql "$TARGET_MIRROR_URL" -tAc 'SELECT count(*) FROM workflow_entity')"
+SOURCE_WORKFLOWS="$(psql "$SOURCE_DATABASE_URL" -tAc 'SELECT count(*) FROM public.workflow_entity')"
+TARGET_WORKFLOWS="$(psql "$TARGET_MIRROR_URL" -tAc 'SELECT count(*) FROM public.workflow_entity')"
 
 echo "VALIDATION source_tables=$SOURCE_TABLES target_tables=$TARGET_TABLES source_workflows=$SOURCE_WORKFLOWS target_workflows=$TARGET_WORKFLOWS"
 test "$SOURCE_TABLES" = "$TARGET_TABLES"
 test "$SOURCE_WORKFLOWS" = "$TARGET_WORKFLOWS"
 echo "MIGRATION_COMPLETED_OK"
+exec tail -f /dev/null
