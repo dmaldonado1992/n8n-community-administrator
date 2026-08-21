@@ -1,10 +1,11 @@
 const MODELS = [
   { name: 'gemini-3-flash-preview', provider: 'gemini' },
   { name: 'gemini-flash-latest', provider: 'gemini' },
-  { name: 'gemini-3.5-flash-lite', provider: 'gemini' },
+  { name: 'gemini-2.5-flash-lite', provider: 'gemini' },
   { name: 'glm-4.5-flash', provider: 'glm' },
 ];
 const DATABASE_ID = 'db72d8bbd4484bc4b6f90151310792ab';
+const CONFIG_PAGE_ID = '3c362fd8699b818a8d38d3c7ab389ddb';
 const NOTION_VERSION = '2022-06-28';
 const env = process.env;
 
@@ -25,11 +26,12 @@ const TEST_JOB = {
   requirements: ['Java', 'Spring Boot', 'Angular', 'TypeScript', 'SQL'],
   testOnly: true,
 };
-const PROMPT = `Return only valid JSON with TARGET_HEADLINE, SUMMARY and COVER_LETTER.
-Use only these facts: 12+ years software development; Full Stack Developer and Technical Lead; Java, Spring Boot, Angular, TypeScript, Node.js, SQL, Docker, AWS; Spanish native; English A2/B1-compatible.
-Do not invent employers, dates, degrees, certifications, metrics, or language fluency.
-This is a controlled test, not a real vacancy.
-VACANCY:${JSON.stringify(TEST_JOB)}`;
+const TEST_FACTS = {
+  yearsExperience: '12+ years',
+  roles: ['Full Stack Developer', 'Technical Lead'],
+  coreStack: ['Java', 'Spring Boot', 'Angular', 'TypeScript', 'Node.js', 'SQL', 'Docker', 'AWS'],
+  languages: 'Spanish native; English A2/B1-compatible',
+};
 
 async function requestJson(url, options) {
   const retryable = new Set([429, 500, 502, 503, 504]);
@@ -68,13 +70,29 @@ function parseCv(raw) {
   return parsed;
 }
 
-async function runGemini(model) {
+async function loadPrompt() {
+  const page = await requestJson(`https://api.notion.com/v1/pages/${CONFIG_PAGE_ID}`, {
+    method: 'GET',
+    headers: notionHeaders(),
+  });
+  if (page.properties?.Enabled?.checkbox !== true) throw new Error('Notion AI prompt is disabled');
+  const template = (page.properties?.Prompt?.rich_text || []).map((part) => part.plain_text || '').join('').trim();
+  for (const placeholder of ['{{FACTS}}', '{{PROFILE}}', '{{VACANCY}}']) {
+    if (!template.includes(placeholder)) throw new Error(`Notion AI prompt is missing ${placeholder}`);
+  }
+  return template
+    .replaceAll('{{FACTS}}', JSON.stringify(TEST_FACTS))
+    .replaceAll('{{PROFILE}}', 'Controlled QA test; do not submit an application')
+    .replaceAll('{{VACANCY}}', JSON.stringify(TEST_JOB));
+}
+
+async function runGemini(model, prompt) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(geminiKey)}`;
   const response = await requestJson(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: PROMPT }] }],
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
     }),
   });
@@ -82,7 +100,7 @@ async function runGemini(model) {
   return parseCv(text);
 }
 
-async function runGlm(model) {
+async function runGlm(model, prompt) {
   const response = await requestJson('https://api.z.ai/api/paas/v4/chat/completions', {
     method: 'POST',
     headers: {
@@ -91,7 +109,7 @@ async function runGlm(model) {
     },
     body: JSON.stringify({
       model,
-      messages: [{ role: 'user', content: PROMPT }],
+      messages: [{ role: 'user', content: prompt }],
       temperature: 0.2,
     }),
   });
@@ -177,13 +195,13 @@ async function linkCv(parentId, cvUrl) {
   });
 }
 
-async function testModel(config) {
+async function testModel(config, prompt) {
   const existing = await findExisting(config.name);
   if (existing) {
     console.log(`[JOB_CV_AI_TEST] already passed ${config.name}`);
     return;
   }
-  const cv = config.provider === 'gemini' ? await runGemini(config.name) : await runGlm(config.name);
+  const cv = config.provider === 'gemini' ? await runGemini(config.name, prompt) : await runGlm(config.name, prompt);
   const parent = await createParent(config.name);
   const child = await createCvPage(parent.id, config.name, cv);
   await linkCv(parent.id, child.url);
@@ -191,10 +209,11 @@ async function testModel(config) {
 }
 
 async function main() {
+  const prompt = await loadPrompt();
   const failures = [];
   for (const config of MODELS) {
     try {
-      await testModel(config);
+      await testModel(config, prompt);
     } catch (error) {
       failures.push({ model: config.name, error: String(error?.message || error) });
       console.error(`[JOB_CV_AI_TEST] failed ${config.name}: ${String(error?.message || error)}`);
@@ -207,4 +226,5 @@ main().catch((error) => {
   console.error(`[JOB_CV_AI_TEST] suite failed: ${String(error?.message || error)}`);
   process.exit(1);
 });
+
 
