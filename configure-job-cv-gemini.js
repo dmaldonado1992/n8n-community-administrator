@@ -3,6 +3,8 @@ const { Client } = require('pg');
 
 const WORKFLOW_ID = '3oZKJ4wjCmQhWdmB';
 const GATEWAY_ID = 'HktxtfXtASJInxsG';
+const CONFIG_NODE = 'Notion — Load AI CV Prompt';
+const CONFIG_PAGE_ID = '3c362fd8699b818a8d38d3c7ab389ddb';
 const PROMPT_NODE = 'Build Truthful Adaptation Prompt';
 const MODEL_CONFIG = new Map([
   ['Gemini CV 1', 'gemini-3-flash-preview'],
@@ -40,7 +42,7 @@ const client = new Client({
     : false,
 });
 
-const PROMPT_CODE = "const rawJob=$json.job_json;let job;try{job=typeof rawJob==='string'?JSON.parse(rawJob):rawJob;}catch{throw new Error('job_json must be valid JSON');}if(!job||typeof job!=='object'||Array.isArray(job))throw new Error('job_json must be an object');const facts={yearsExperience:'12+ years',roles:['Full Stack Developer','Technical Lead'],coreStack:['Java','Spring Boot','Angular','TypeScript','Node.js','SQL','Docker','Azure DevOps','AWS'],languages:'Spanish native; English A2/B1-compatible'};const instructions=String(job.language||'EN').toUpperCase()==='ES'?'Responde solo JSON válido con TARGET_HEADLINE, SUMMARY y COVER_LETTER. Usa únicamente los hechos listados; no inventes experiencia.':'Return only valid JSON with TARGET_HEADLINE, SUMMARY and COVER_LETTER. Use only the listed facts; do not invent experience.';return [{json:{job,profile:$json.profile,masterFileId:$json.master_file_id,notionPageId:$json.notion_page_id,prompt:instructions+'\\nFACTS:'+JSON.stringify(facts)+'\\nVACANCY:'+JSON.stringify(job)}}];";
+const PROMPT_CODE = "const input=$('When Called after Match').first().json;const response=$json.body??$json;const status=Number($json.statusCode||200);if(status!==200)throw new Error('Notion AI prompt could not be loaded (HTTP '+status+')');const properties=response.properties||{};if(properties.Enabled?.checkbox!==true)throw new Error('Notion AI prompt is disabled');const template=(properties.Prompt?.rich_text||[]).map(part=>part.plain_text??part.text?.content??'').join('').trim();if(!template)throw new Error('Notion AI prompt is empty');const required=['{{FACTS}}','{{PROFILE}}','{{VACANCY}}'];for(const placeholder of required){if(!template.includes(placeholder))throw new Error('Notion AI prompt is missing '+placeholder)}const rawJob=input.job_json;let job;try{job=typeof rawJob==='string'?JSON.parse(rawJob):rawJob;}catch{throw new Error('job_json must be valid JSON');}if(!job||typeof job!=='object'||Array.isArray(job))throw new Error('job_json must be an object');const facts={yearsExperience:'12+ years',roles:['Full Stack Developer','Technical Lead'],coreStack:['Java','Spring Boot','Angular','TypeScript','Node.js','SQL','Docker','Azure DevOps','AWS'],languages:'Spanish native; English A2/B1-compatible'};const prompt=template.replaceAll('{{FACTS}}',JSON.stringify(facts)).replaceAll('{{PROFILE}}',String(input.profile||'')).replaceAll('{{VACANCY}}',JSON.stringify(job));return [{json:{job,profile:input.profile,masterFileId:input.master_file_id,notionPageId:input.notion_page_id,prompt,promptSource:'notion',promptPageId:'3c362fd8699b818a8d38d3c7ab389ddb'}}];";
 const GEMINI_BODY = "={{ JSON.stringify({ contents: [{ role: 'user', parts: [{ text: $('Build Truthful Adaptation Prompt').item.json.prompt }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.2 } }) }}";
 const GLM_BODY = "={{ JSON.stringify({ model: 'glm-4.5-flash', messages: [{ role: 'user', content: $('Build Truthful Adaptation Prompt').item.json.prompt }], temperature: 0.2 }) }}";
 const NORMALIZE_GEMINI_CODE = "const response=$json.body??$json;const text=response?.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'';if(!text)throw new Error('Gemini returned no text');const reported=String(response.modelVersion||'').toLowerCase();const modelUsed=reported.includes('gemini-3-flash-preview')?'gemini-3-flash-preview':reported.includes('gemini-3.5-flash-lite')?'gemini-3.5-flash-lite':'gemini-flash-latest';return [{json:{output_text:text,provider:'google-gemini',modelUsed}}];";
@@ -88,6 +90,34 @@ function configurePrompt(nodes) {
   prompt.parameters = { jsCode: PROMPT_CODE };
 }
 
+function configurePromptSource(nodes) {
+  let source = nodes.find((node) => node.name === CONFIG_NODE);
+  if (!source) {
+    source = {
+      id: randomUUID(),
+      name: CONFIG_NODE,
+      type: 'n8n-nodes-base.httpRequest',
+      typeVersion: 4.2,
+      position: [220, 0],
+      parameters: {},
+    };
+    nodes.push(source);
+  }
+  source.onError = 'continueRegularOutput';
+  source.parameters = {
+    method: 'GET',
+    url: `https://api.notion.com/v1/pages/${CONFIG_PAGE_ID}`,
+    sendHeaders: true,
+    headerParameters: {
+      parameters: [
+        { name: 'Authorization', value: "={{ 'Bearer ' + ($env.NOTION_API_KEY || $env.NOTION_TOKEN || $env.NOTION_API_TOKEN || '') }}" },
+        { name: 'Notion-Version', value: '2022-06-28' },
+      ],
+    },
+    options: { response: { response: { fullResponse: true, neverError: true } } },
+  };
+}
+
 function configureHttpNode(node) {
   node.onError = 'continueRegularOutput';
   node.parameters.options = node.parameters.options || {};
@@ -116,7 +146,8 @@ function configureNormalizers(nodes) {
 }
 
 function configureConnections(connections) {
-  setConnection(connections, 'When Called after Match', [[PROMPT_NODE]]);
+  setConnection(connections, 'When Called after Match', [[CONFIG_NODE]]);
+  setConnection(connections, CONFIG_NODE, [[PROMPT_NODE]]);
   setConnection(connections, PROMPT_NODE, [['Gemini CV 1']]);
   setConnection(connections, 'Gemini CV 1', [['Gemini CV OK 1']]);
   setConnection(connections, 'Gemini CV OK 1', [['Normalize Gemini CV'], ['Gemini CV 2']]);
@@ -137,6 +168,7 @@ function configure(workflow) {
   const nodes = structuredClone(workflow.nodes || []);
   const connections = structuredClone(workflow.connections || {});
   configureTrigger(nodes);
+  configurePromptSource(nodes);
   configurePrompt(nodes);
   configureModels(nodes);
   configureNormalizers(nodes);
@@ -163,7 +195,7 @@ function configureGateway(workflow) {
 
 function assertConfigured(workflow) {
   const names = new Set(workflow.nodes.map((node) => node.name));
-  const required = [PROMPT_NODE, ...MODEL_CONFIG.keys(), 'GLM Fallback Zai', 'All Models Failed'];
+  const required = [CONFIG_NODE, PROMPT_NODE, ...MODEL_CONFIG.keys(), 'GLM Fallback Zai', 'All Models Failed'];
   for (const name of required) {
     if (!names.has(name)) throw new Error(`Verification failed; missing node: ${name}`);
   }
@@ -171,6 +203,13 @@ function assertConfigured(workflow) {
     if (getNode(workflow.nodes, name).onError !== 'continueRegularOutput') {
       throw new Error(`Verification failed; transport fallback disabled: ${name}`);
     }
+  }
+  const source = getNode(workflow.nodes, CONFIG_NODE);
+  if (source.onError !== 'continueRegularOutput' || !source.parameters.url.endsWith(CONFIG_PAGE_ID)) {
+    throw new Error('Verification failed; Notion prompt source is not configured');
+  }
+  if (!getNode(workflow.nodes, PROMPT_NODE).parameters.jsCode.includes('properties.Prompt?.rich_text')) {
+    throw new Error('Verification failed; prompt is not loaded from Notion');
   }
   assertNoOpenAi(workflow.nodes);
 }
@@ -240,4 +279,5 @@ main().catch((error) => {
   console.error(`[JOB_CV_GEMINI] failed: ${String(error?.message || error)}`);
   process.exit(1);
 });
+
 
