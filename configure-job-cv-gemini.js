@@ -152,15 +152,12 @@ function configureGateway(workflow) {
   const resultNode = getNode(nodes, 'Return Gateway Result');
   const marker = 'adaptationMode:parsed.adaptationMode,warning:parsed.warning';
   if (!resultNode.parameters.jsCode.includes(marker)) {
-    if (!resultNode.parameters.jsCode.includes('modelUsed:prep?.modelUsed||null')) {
-      throw new Error('Gateway result code shape changed');
-    }
-  } else {
-    resultNode.parameters.jsCode = resultNode.parameters.jsCode.replace(
-      marker,
-      'modelUsed:prep?.modelUsed||null,adaptationMode:parsed.adaptationMode,warning:parsed.warning',
-    );
+    throw new Error('Gateway result code shape changed');
   }
+  resultNode.parameters.jsCode = resultNode.parameters.jsCode.replace(
+    /(?:modelUsed:prep\?\.modelUsed\|\|null,)*adaptationMode:parsed\.adaptationMode,warning:parsed\.warning/,
+    'modelUsed:prep?.modelUsed||null,adaptationMode:parsed.adaptationMode,warning:parsed.warning',
+  );
   return { nodes, connections };
 }
 
