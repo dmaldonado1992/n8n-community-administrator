@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: job-application-platform-runner
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: application-runner
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: APPLICATION_RUNNER_TOKEN
+        generateValue: true
+      - key: STEEL_API_KEY
+        sync: false
+
