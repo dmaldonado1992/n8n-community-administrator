@@ -1,7 +1,7 @@
 const MODELS = [
   { name: 'gemini-3-flash-preview', provider: 'gemini' },
   { name: 'gemini-flash-latest', provider: 'gemini' },
-  { name: 'gemini-2.5-flash-lite', provider: 'gemini' },
+  { name: 'gemini-3.5-flash-lite', provider: 'gemini' },
   { name: 'glm-4.5-flash', provider: 'glm' },
 ];
 const DATABASE_ID = 'db72d8bbd4484bc4b6f90151310792ab';
@@ -32,19 +32,24 @@ This is a controlled test, not a real vacancy.
 VACANCY:${JSON.stringify(TEST_JOB)}`;
 
 async function requestJson(url, options) {
-  const response = await fetch(url, { ...options, signal: AbortSignal.timeout(60000) });
-  const body = await response.text();
-  let json;
-  try {
-    json = body ? JSON.parse(body) : {};
-  } catch {
-    throw new Error(`Non-JSON response (${response.status}): ${body.slice(0, 300)}`);
-  }
-  if (!response.ok) {
+  const retryable = new Set([429, 500, 502, 503, 504]);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const response = await fetch(url, { ...options, signal: AbortSignal.timeout(60000) });
+    const body = await response.text();
+    let json;
+    try {
+      json = body ? JSON.parse(body) : {};
+    } catch {
+      throw new Error(`Non-JSON response (${response.status}): ${body.slice(0, 300)}`);
+    }
+    if (response.ok) return json;
     const message = json?.error?.message || json?.message || body.slice(0, 300);
-    throw new Error(`HTTP ${response.status}: ${message}`);
+    if (!retryable.has(response.status) || attempt === 3) {
+      throw new Error(`HTTP ${response.status}: ${message}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 3000 * (2 ** (attempt - 1))));
   }
-  return json;
+  throw new Error('Request retries exhausted');
 }
 
 function parseCv(raw) {
